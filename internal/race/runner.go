@@ -117,9 +117,11 @@ func worker(
 	}
 	defer conn.Conn.Close()
 	connectedNS := conn.ConnectedAt.Sub(started).Nanoseconds()
-	handshakeNS := conn.HandshakeAt.Sub(started).Nanoseconds()
 	result.ConnectedAfterStartNS = int64Pointer(connectedNS)
-	result.HandshakeAfterStartNS = int64Pointer(handshakeNS)
+	if conn.HandshakeAt != nil {
+		handshakeNS := conn.HandshakeAt.Sub(started).Nanoseconds()
+		result.HandshakeAfterStartNS = int64Pointer(handshakeNS)
+	}
 	result.LocalAddress = conn.LocalAddress
 	result.RemoteAddress = conn.RemoteAddress
 	result.TLSVersion = conn.TLSVersion

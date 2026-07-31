@@ -55,7 +55,7 @@ The CLI accepts one strict JSON value. Unknown fields are rejected. The machine-
   "schema_version": 1,
   "target": "example.com:443",
   "server_name": "example.com",
-  "tls": { "profile": "default" },
+  "tls": { "enabled": true, "profile": "default" },
   "copies": 20,
   "prefix_base64": "...",
   "suffix_base64": "...",
@@ -66,7 +66,7 @@ The CLI accepts one strict JSON value. Unknown fields are rejected. The machine-
 }
 ```
 
-`tls.client_hello_hex` may replace `tls.profile` when reproducing an intercepted ClientHello. Certificate verification is enabled by default; `tls.ca_file` adds a PEM trust source. `tls.insecure_skip_verify` exists for controlled local labs.
+`tls.enabled` defaults to `true`; set it to `false` for raw TCP HTTP. `tls.client_hello_hex` may replace `tls.profile` when reproducing an intercepted ClientHello. Certificate verification is enabled by default; `tls.ca_file` adds a PEM trust source. `tls.insecure_skip_verify` exists for controlled local labs.
 
 ## Scope
 

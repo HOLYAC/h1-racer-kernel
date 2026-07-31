@@ -21,6 +21,7 @@ const (
 )
 
 type TLSPlan struct {
+	Enabled            *bool  `json:"enabled,omitempty"`
 	Profile            string `json:"profile,omitempty"`
 	ClientHelloHex     string `json:"client_hello_hex,omitempty"`
 	InsecureSkipVerify bool   `json:"insecure_skip_verify,omitempty"`
@@ -44,6 +45,7 @@ type RacePlan struct {
 type CompiledPlan struct {
 	Target           string
 	ServerName       string
+	UseTLS           bool
 	TLS              TLSPlan
 	Copies           int
 	Prefix           []byte
@@ -66,17 +68,34 @@ func (p RacePlan) Compile() (CompiledPlan, error) {
 	if p.Copies < MinCopies || p.Copies > MaxCopies {
 		return CompiledPlan{}, fmt.Errorf("copies must be between %d and %d", MinCopies, MaxCopies)
 	}
-	if strings.TrimSpace(p.TLS.Profile) != "" && strings.TrimSpace(p.TLS.ClientHelloHex) != "" {
-		return CompiledPlan{}, errors.New("tls.profile and tls.client_hello_hex are mutually exclusive")
+
+	useTLS := true
+	if p.TLS.Enabled != nil {
+		useTLS = *p.TLS.Enabled
 	}
-	if p.TLS.CAFile != "" {
-		info, statErr := os.Stat(p.TLS.CAFile)
-		if statErr != nil {
-			return CompiledPlan{}, fmt.Errorf("tls.ca_file: %w", statErr)
+	profile := strings.TrimSpace(p.TLS.Profile)
+	clientHelloHex := strings.TrimSpace(p.TLS.ClientHelloHex)
+	if !useTLS {
+		if profile != "" || clientHelloHex != "" || p.TLS.InsecureSkipVerify || p.TLS.CAFile != "" {
+			return CompiledPlan{}, errors.New("TLS options require tls.enabled=true")
 		}
-		if info.IsDir() {
-			return CompiledPlan{}, errors.New("tls.ca_file must name a file")
+	} else {
+		if profile != "" && clientHelloHex != "" {
+			return CompiledPlan{}, errors.New("tls.profile and tls.client_hello_hex are mutually exclusive")
 		}
+		if p.TLS.CAFile != "" {
+			info, statErr := os.Stat(p.TLS.CAFile)
+			if statErr != nil {
+				return CompiledPlan{}, fmt.Errorf("tls.ca_file: %w", statErr)
+			}
+			if info.IsDir() {
+				return CompiledPlan{}, errors.New("tls.ca_file must name a file")
+			}
+		}
+		if profile == "" && clientHelloHex == "" {
+			profile = "default"
+		}
+		p.TLS.Profile = profile
 	}
 
 	prefix, err := base64.StdEncoding.DecodeString(p.PrefixBase64)
@@ -129,18 +148,14 @@ func (p RacePlan) Compile() (CompiledPlan, error) {
 	}
 
 	serverName := p.ServerName
-	if serverName == "" {
+	if useTLS && serverName == "" {
 		serverName = host
 	}
-	profile := strings.TrimSpace(p.TLS.Profile)
-	if profile == "" && strings.TrimSpace(p.TLS.ClientHelloHex) == "" {
-		profile = "default"
-	}
-	p.TLS.Profile = profile
 
 	return CompiledPlan{
 		Target:           p.Target,
 		ServerName:       serverName,
+		UseTLS:           useTLS,
 		TLS:              p.TLS,
 		Copies:           p.Copies,
 		Prefix:           prefix,

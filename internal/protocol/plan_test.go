@@ -44,3 +44,29 @@ func TestCompileRejectsEmptySuffix(t *testing.T) {
 		t.Fatal("expected empty suffix error")
 	}
 }
+
+func TestCompileDisablesTLSForPlainTCP(t *testing.T) {
+	plan := validPlan()
+	disabled := false
+	plan.TLS.Enabled = &disabled
+	compiled, err := plan.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compiled.UseTLS {
+		t.Fatal("plain TCP plan unexpectedly enabled TLS")
+	}
+	if compiled.TLS.Profile != "" {
+		t.Fatalf("plain TCP profile = %q", compiled.TLS.Profile)
+	}
+}
+
+func TestCompileRejectsTLSOptionsWhenDisabled(t *testing.T) {
+	plan := validPlan()
+	disabled := false
+	plan.TLS.Enabled = &disabled
+	plan.TLS.Profile = "default"
+	if _, err := plan.Compile(); err == nil {
+		t.Fatal("expected disabled TLS option error")
+	}
+}

@@ -3,6 +3,7 @@
   "target": "localhost:8443",
   "server_name": "localhost",
   "tls": {
+    "enabled": true,
     "profile": "default",
     "insecure_skip_verify": true
   },

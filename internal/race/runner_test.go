@@ -23,6 +23,53 @@ import (
 	"github.com/HOLYAC/h1-racer-kernel/internal/protocol"
 )
 
+func TestRunFiresPlainTCPConnections(t *testing.T) {
+	const copies = 6
+	address, requests, closeServer := startPlainServer(t, copies)
+	defer closeServer()
+	prefix := []byte("GET /plain HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nX-Race: armed\r\n")
+	suffix := []byte("\r\n")
+	disabled := false
+	plan := protocol.RacePlan{
+		SchemaVersion:    protocol.SchemaVersion,
+		Target:           address,
+		TLS:              protocol.TLSPlan{Enabled: &disabled},
+		Copies:           copies,
+		PrefixBase64:     base64.StdEncoding.EncodeToString(prefix),
+		SuffixBase64:     base64.StdEncoding.EncodeToString(suffix),
+		ConnectTimeoutMS: 5000,
+		IOTimeoutMS:      2000,
+		SettleMS:         5,
+	}
+	compiled, err := plan.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := Run(context.Background(), compiled)
+	if !report.Fired || report.ReadyCount != copies || report.AbortError != "" {
+		t.Fatalf("unexpected report: fired=%v ready=%d abort=%q", report.Fired, report.ReadyCount, report.AbortError)
+	}
+	for _, result := range report.Connections {
+		if result.Error != "" || result.Phase != "complete" {
+			t.Fatalf("connection %d: phase=%s error=%s", result.Index, result.Phase, result.Error)
+		}
+		if result.HandshakeAfterStartNS != nil || result.TLSVersion != "" {
+			t.Fatalf("connection %d reported TLS metadata for plain TCP", result.Index)
+		}
+	}
+	want := string(append(append([]byte{}, prefix...), suffix...))
+	for range copies {
+		select {
+		case request := <-requests:
+			if string(request) != want {
+				t.Fatalf("request bytes changed: %q", request)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("server did not receive every request")
+		}
+	}
+}
+
 func TestRunFiresAllConnections(t *testing.T) {
 	const copies = 6
 	address, requests, closeServer := startTLSServer(t, copies)
@@ -100,6 +147,42 @@ func TestRunAbortsBeforeFireWhenOneHandshakeFails(t *testing.T) {
 	case request := <-completedRequests:
 		t.Fatalf("server received a completed request after abort: %q", request)
 	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+func startPlainServer(t *testing.T, expected int) (string, <-chan []byte, func()) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan []byte, expected)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+				request, readErr := readHeaders(conn)
+				if readErr != nil {
+					return
+				}
+				requests <- request
+				_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
+			}()
+		}
+	}()
+	return listener.Addr().String(), requests, func() {
+		_ = listener.Close()
+		wg.Wait()
 	}
 }
 

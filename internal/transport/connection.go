@@ -21,9 +21,9 @@ type Factory struct {
 }
 
 type Connection struct {
-	Conn          *utls.UConn
+	Conn          net.Conn
 	ConnectedAt   time.Time
-	HandshakeAt   time.Time
+	HandshakeAt   *time.Time
 	LocalAddress  string
 	RemoteAddress string
 	TLSVersion    string
@@ -33,7 +33,7 @@ type Connection struct {
 
 func NewFactory(plan protocol.CompiledPlan) (*Factory, error) {
 	var roots *x509.CertPool
-	if plan.TLS.CAFile != "" {
+	if plan.UseTLS && plan.TLS.CAFile != "" {
 		pemBytes, err := os.ReadFile(plan.TLS.CAFile)
 		if err != nil {
 			return nil, fmt.Errorf("read CA file: %w", err)
@@ -66,6 +66,17 @@ func (f *Factory) Open(ctx context.Context) (*Connection, error) {
 		_ = tcp.SetNoDelay(true)
 	}
 	_ = raw.SetDeadline(time.Now().Add(f.plan.ConnectTimeout))
+
+	if !f.plan.UseTLS {
+		_ = raw.SetDeadline(time.Time{})
+		closeOnError = false
+		return &Connection{
+			Conn:          raw,
+			ConnectedAt:   connectedAt,
+			LocalAddress:  raw.LocalAddr().String(),
+			RemoteAddress: raw.RemoteAddr().String(),
+		}, nil
+	}
 
 	config := &utls.Config{
 		ServerName:         f.plan.ServerName,
@@ -102,7 +113,7 @@ func (f *Factory) Open(ctx context.Context) (*Connection, error) {
 	return &Connection{
 		Conn:          uconn,
 		ConnectedAt:   connectedAt,
-		HandshakeAt:   handshakeAt,
+		HandshakeAt:   &handshakeAt,
 		LocalAddress:  raw.LocalAddr().String(),
 		RemoteAddress: raw.RemoteAddr().String(),
 		TLSVersion:    tls.VersionName(state.Version),

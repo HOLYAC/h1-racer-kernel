@@ -26,6 +26,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	planPath := flags.String("plan", "", "path to RacePlan JSON")
 	outputPath := flags.String("output", "", "optional path for RaceReport JSON")
+	quiet := flags.Bool("quiet", false, "suppress report JSON on stdout; requires --output")
 	listProfiles := flags.Bool("list-profiles", false, "list accepted TLS profile names")
 	showVersion := flags.Bool("version", false, "print build version")
 	if err := flags.Parse(args); err != nil {
@@ -45,6 +46,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if *planPath == "" {
 		fmt.Fprintln(stderr, "--plan is required")
+		return 2
+	}
+	if *quiet && *outputPath == "" {
+		fmt.Fprintln(stderr, "--quiet requires --output")
 		return 2
 	}
 
@@ -84,9 +89,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	if _, err = stdout.Write(encoded); err != nil {
-		fmt.Fprintf(stderr, "write stdout: %v\n", err)
-		return 2
+	if !*quiet {
+		if _, err = stdout.Write(encoded); err != nil {
+			fmt.Fprintf(stderr, "write stdout: %v\n", err)
+			return 2
+		}
 	}
 	if !report.Fired || report.AbortError != "" {
 		return 1
