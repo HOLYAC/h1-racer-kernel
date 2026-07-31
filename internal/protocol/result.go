@@ -10,6 +10,14 @@ type ConnectionResult struct {
 	TLSVersion               string `json:"tls_version,omitempty"`
 	CipherSuite              string `json:"cipher_suite,omitempty"`
 	ALPN                     string `json:"alpn,omitempty"`
+	CertificateVerified      *bool  `json:"certificate_verified,omitempty"`
+	TLSIdentitySource        string `json:"tls_identity_source,omitempty"`
+	TLSProfile               string `json:"tls_profile,omitempty"`
+	ClientHelloBytes         int    `json:"client_hello_bytes,omitempty"`
+	ClientHelloSHA256        string `json:"client_hello_sha256,omitempty"`
+	ClientHelloJA3           string `json:"client_hello_ja3,omitempty"`
+	ClientHelloJA3SHA256     string `json:"client_hello_ja3_sha256,omitempty"`
+	ClientHelloRecordCount   int    `json:"client_hello_record_count,omitempty"`
 	ConnectedAfterStartNS    *int64 `json:"connected_after_start_ns,omitempty"`
 	HandshakeAfterStartNS    *int64 `json:"handshake_after_start_ns,omitempty"`
 	ArmedAfterStartNS        *int64 `json:"armed_after_start_ns,omitempty"`

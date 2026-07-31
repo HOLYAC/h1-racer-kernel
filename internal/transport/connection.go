@@ -21,14 +21,22 @@ type Factory struct {
 }
 
 type Connection struct {
-	Conn          net.Conn
-	ConnectedAt   time.Time
-	HandshakeAt   *time.Time
-	LocalAddress  string
-	RemoteAddress string
-	TLSVersion    string
-	CipherSuite   string
-	ALPN          string
+	Conn                   net.Conn
+	ConnectedAt            time.Time
+	HandshakeAt            *time.Time
+	LocalAddress           string
+	RemoteAddress          string
+	TLSVersion             string
+	CipherSuite            string
+	ALPN                   string
+	CertificateVerified    *bool
+	TLSIdentitySource      string
+	TLSProfile             string
+	ClientHelloBytes       int
+	ClientHelloSHA256      string
+	ClientHelloJA3         string
+	ClientHelloJA3SHA256   string
+	ClientHelloRecordCount int
 }
 
 func NewFactory(plan protocol.CompiledPlan) (*Factory, error) {
@@ -86,13 +94,18 @@ func (f *Factory) Open(ctx context.Context) (*Connection, error) {
 		MinVersion:         tls.VersionTLS12,
 	}
 
+	traceRaw := newClientHelloCaptureConn(raw)
+	identitySource := "profile"
+	profile := f.plan.TLS.Profile
 	var uconn *utls.UConn
 	if f.plan.TLS.ClientHelloHex != "" {
+		identitySource = "client_hello_hex"
+		profile = ""
 		spec, specErr := clientHelloSpecFromHex(f.plan.TLS.ClientHelloHex)
 		if specErr != nil {
 			return nil, specErr
 		}
-		uconn = utls.UClient(raw, config, utls.HelloCustom, false, true, true)
+		uconn = utls.UClient(traceRaw, config, utls.HelloCustom, false, true, true)
 		if err = uconn.ApplyPreset(spec); err != nil {
 			return nil, fmt.Errorf("apply client hello: %w", err)
 		}
@@ -101,7 +114,7 @@ func (f *Factory) Open(ctx context.Context) (*Connection, error) {
 		if idErr != nil {
 			return nil, idErr
 		}
-		uconn = utls.UClient(raw, config, id, false, true, true)
+		uconn = utls.UClient(traceRaw, config, id, false, true, true)
 	}
 	if err = uconn.HandshakeContext(ctx); err != nil {
 		return nil, fmt.Errorf("TLS handshake: %w", err)
@@ -109,16 +122,36 @@ func (f *Factory) Open(ctx context.Context) (*Connection, error) {
 	handshakeAt := time.Now()
 	_ = uconn.SetDeadline(time.Time{})
 	state := uconn.ConnectionState()
+	if state.NegotiatedProtocol != "http/1.1" {
+		return nil, fmt.Errorf(
+			"TLS peer negotiated ALPN %q; required http/1.1",
+			state.NegotiatedProtocol,
+		)
+	}
+	captured, overflow := traceRaw.snapshot()
+	evidence, evidenceErr := analyzeCapturedClientHello(captured, overflow)
+	if evidenceErr != nil {
+		return nil, fmt.Errorf("capture outbound ClientHello: %w", evidenceErr)
+	}
+	verified := !f.plan.TLS.InsecureSkipVerify
 	closeOnError = false
 	return &Connection{
-		Conn:          uconn,
-		ConnectedAt:   connectedAt,
-		HandshakeAt:   &handshakeAt,
-		LocalAddress:  raw.LocalAddr().String(),
-		RemoteAddress: raw.RemoteAddr().String(),
-		TLSVersion:    tls.VersionName(state.Version),
-		CipherSuite:   tls.CipherSuiteName(state.CipherSuite),
-		ALPN:          state.NegotiatedProtocol,
+		Conn:                   uconn,
+		ConnectedAt:            connectedAt,
+		HandshakeAt:            &handshakeAt,
+		LocalAddress:           raw.LocalAddr().String(),
+		RemoteAddress:          raw.RemoteAddr().String(),
+		TLSVersion:             tls.VersionName(state.Version),
+		CipherSuite:            tls.CipherSuiteName(state.CipherSuite),
+		ALPN:                   state.NegotiatedProtocol,
+		CertificateVerified:    &verified,
+		TLSIdentitySource:      identitySource,
+		TLSProfile:             profile,
+		ClientHelloBytes:       evidence.Bytes,
+		ClientHelloSHA256:      evidence.SHA256,
+		ClientHelloJA3:         evidence.JA3,
+		ClientHelloJA3SHA256:   evidence.JA3SHA256,
+		ClientHelloRecordCount: evidence.RecordCount,
 	}, nil
 }
 

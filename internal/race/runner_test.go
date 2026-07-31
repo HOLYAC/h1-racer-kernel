@@ -10,17 +10,21 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/HOLYAC/h1-racer-kernel/internal/protocol"
+	utls "github.com/bogdanfinn/utls"
 )
 
 func TestRunFiresPlainTCPConnections(t *testing.T) {
@@ -53,7 +57,8 @@ func TestRunFiresPlainTCPConnections(t *testing.T) {
 		if result.Error != "" || result.Phase != "complete" {
 			t.Fatalf("connection %d: phase=%s error=%s", result.Index, result.Phase, result.Error)
 		}
-		if result.HandshakeAfterStartNS != nil || result.TLSVersion != "" {
+		if result.HandshakeAfterStartNS != nil || result.TLSVersion != "" ||
+			result.CertificateVerified != nil || result.ClientHelloSHA256 != "" {
 			t.Fatalf("connection %d reported TLS metadata for plain TCP", result.Index)
 		}
 	}
@@ -96,9 +101,26 @@ func TestRunFiresAllConnections(t *testing.T) {
 	if !report.Fired || report.ReadyCount != copies || report.AbortError != "" {
 		t.Fatalf("unexpected report: fired=%v ready=%d abort=%q", report.Fired, report.ReadyCount, report.AbortError)
 	}
+	structuralHash := ""
 	for _, result := range report.Connections {
 		if result.Error != "" || result.Phase != "complete" {
 			t.Fatalf("connection %d: phase=%s error=%s", result.Index, result.Phase, result.Error)
+		}
+		if result.TLSIdentitySource != "profile" || result.TLSProfile != "default" {
+			t.Fatalf("connection %d identity = %s/%s", result.Index, result.TLSIdentitySource, result.TLSProfile)
+		}
+		if result.CertificateVerified == nil || *result.CertificateVerified {
+			t.Fatalf("connection %d did not report the explicit insecure test policy", result.Index)
+		}
+		if result.ClientHelloBytes == 0 || len(result.ClientHelloSHA256) != 64 ||
+			result.ClientHelloJA3 == "" || len(result.ClientHelloJA3SHA256) != 64 ||
+			result.ClientHelloRecordCount == 0 {
+			t.Fatalf("connection %d has incomplete ClientHello evidence: %+v", result.Index, result)
+		}
+		if structuralHash == "" {
+			structuralHash = result.ClientHelloJA3SHA256
+		} else if result.ClientHelloJA3SHA256 != structuralHash {
+			t.Fatalf("connection %d structural TLS identity drifted", result.Index)
 		}
 		decoded, decodeErr := base64.StdEncoding.DecodeString(result.ResponseBase64)
 		if decodeErr != nil || !bytes.Contains(decoded, []byte("200 OK")) {
@@ -114,6 +136,131 @@ func TestRunFiresAllConnections(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("server did not receive every request")
 		}
+	}
+}
+
+func TestRunUsesCapturedCustomClientHello(t *testing.T) {
+	const copies = 2
+	address, requests, closeServer := startTLSServer(t, copies)
+	defer closeServer()
+	prefix := []byte("GET /custom-hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n")
+	suffix := []byte("\r\n")
+	plan := protocol.RacePlan{
+		SchemaVersion: protocol.SchemaVersion,
+		Target:        address,
+		ServerName:    "localhost",
+		TLS: protocol.TLSPlan{
+			ClientHelloHex:     capturedClientHelloHex(t),
+			InsecureSkipVerify: true,
+		},
+		Copies:           copies,
+		PrefixBase64:     base64.StdEncoding.EncodeToString(prefix),
+		SuffixBase64:     base64.StdEncoding.EncodeToString(suffix),
+		ConnectTimeoutMS: 3000,
+		IOTimeoutMS:      1000,
+	}
+	compiled, err := plan.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := Run(context.Background(), compiled)
+	if !report.Fired || report.AbortError != "" {
+		t.Fatalf("custom ClientHello race failed: fired=%v abort=%q", report.Fired, report.AbortError)
+	}
+	for _, result := range report.Connections {
+		if result.TLSIdentitySource != "client_hello_hex" || result.TLSProfile != "" {
+			t.Fatalf("connection %d identity = %s/%s", result.Index, result.TLSIdentitySource, result.TLSProfile)
+		}
+		if result.ClientHelloSHA256 == "" || result.ClientHelloJA3SHA256 == "" {
+			t.Fatalf("connection %d lacks custom ClientHello evidence", result.Index)
+		}
+	}
+	want := string(append(append([]byte{}, prefix...), suffix...))
+	for range copies {
+		select {
+		case request := <-requests:
+			if string(request) != want {
+				t.Fatalf("request bytes changed: %q", request)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("server did not receive custom ClientHello request")
+		}
+	}
+}
+
+func TestRunReportsVerifiedCertificateWithCustomCA(t *testing.T) {
+	const copies = 2
+	certificate, certPEM := selfSignedCertificateMaterial(t)
+	address, requests, closeServer := startTLSServerWithCertificate(t, copies, certificate)
+	defer closeServer()
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prefix := []byte("GET /verified HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n")
+	suffix := []byte("\r\n")
+	plan := protocol.RacePlan{
+		SchemaVersion:    protocol.SchemaVersion,
+		Target:           address,
+		ServerName:       "localhost",
+		TLS:              protocol.TLSPlan{Profile: "default", CAFile: caFile},
+		Copies:           copies,
+		PrefixBase64:     base64.StdEncoding.EncodeToString(prefix),
+		SuffixBase64:     base64.StdEncoding.EncodeToString(suffix),
+		ConnectTimeoutMS: 3000,
+		IOTimeoutMS:      1000,
+	}
+	compiled, err := plan.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := Run(context.Background(), compiled)
+	if !report.Fired || report.AbortError != "" {
+		t.Fatalf("verified race failed: fired=%v abort=%q", report.Fired, report.AbortError)
+	}
+	for _, result := range report.Connections {
+		if result.CertificateVerified == nil || !*result.CertificateVerified {
+			t.Fatalf("connection %d did not report verified certificate", result.Index)
+		}
+	}
+	want := string(append(append([]byte{}, prefix...), suffix...))
+	for range copies {
+		select {
+		case request := <-requests:
+			if string(request) != want {
+				t.Fatalf("request bytes changed: %q", request)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("server did not receive verified request")
+		}
+	}
+}
+
+func TestRunAbortsBeforeFireWhenALPNIsAbsent(t *testing.T) {
+	const copies = 3
+	address, closeServer := startTLSWithoutALPN(t, copies)
+	defer closeServer()
+	plan := protocol.RacePlan{
+		SchemaVersion:    protocol.SchemaVersion,
+		Target:           address,
+		ServerName:       "localhost",
+		TLS:              protocol.TLSPlan{Profile: "default", InsecureSkipVerify: true},
+		Copies:           copies,
+		PrefixBase64:     base64.StdEncoding.EncodeToString([]byte("GET /alpn HTTP/1.1\r\nHost: localhost\r\n")),
+		SuffixBase64:     base64.StdEncoding.EncodeToString([]byte("\r\n")),
+		ConnectTimeoutMS: 3000,
+		IOTimeoutMS:      1000,
+	}
+	compiled, err := plan.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := Run(context.Background(), compiled)
+	if report.Fired {
+		t.Fatal("race fired without negotiated HTTP/1.1 ALPN")
+	}
+	if !strings.Contains(report.AbortError, "ALPN") {
+		t.Fatalf("abort error = %q", report.AbortError)
 	}
 }
 
@@ -150,6 +297,39 @@ func TestRunAbortsBeforeFireWhenOneHandshakeFails(t *testing.T) {
 	}
 }
 
+func capturedClientHelloHex(t *testing.T) string {
+	t.Helper()
+	client, server := net.Pipe()
+	uconn := utls.UClient(
+		client,
+		&utls.Config{ServerName: "localhost", NextProtos: []string{"http/1.1"}},
+		utls.HelloChrome_Auto,
+		false,
+		true,
+		true,
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = uconn.SetDeadline(time.Now().Add(2 * time.Second))
+		_ = uconn.Handshake()
+		_ = uconn.Close()
+	}()
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(server, header); err != nil {
+		t.Fatal(err)
+	}
+	payloadLength := int(header[3])<<8 | int(header[4])
+	payload := make([]byte, payloadLength)
+	if _, err := io.ReadFull(server, payload); err != nil {
+		t.Fatal(err)
+	}
+	record := append(append([]byte(nil), header...), payload...)
+	_ = server.Close()
+	<-done
+	return hex.EncodeToString(record)
+}
+
 func startPlainServer(t *testing.T, expected int) (string, <-chan []byte, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -181,6 +361,43 @@ func startPlainServer(t *testing.T, expected int) (string, <-chan []byte, func()
 		}
 	}()
 	return listener.Addr().String(), requests, func() {
+		_ = listener.Close()
+		wg.Wait()
+	}
+}
+
+func startTLSWithoutALPN(t *testing.T, expected int) (string, func()) {
+	t.Helper()
+	certificate := selfSignedCertificate(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for accepted := 0; accepted < expected; accepted++ {
+			raw, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer raw.Close()
+				conn := tls.Server(raw, &tls.Config{
+					Certificates: []tls.Certificate{certificate},
+					MinVersion:   tls.VersionTLS12,
+				})
+				_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+				_ = conn.HandshakeContext(ctx)
+			}()
+		}
+	}()
+	return listener.Addr().String(), func() {
+		cancel()
 		_ = listener.Close()
 		wg.Wait()
 	}
@@ -235,7 +452,15 @@ func startRejectOneTLSServer(t *testing.T, expected int) (string, <-chan []byte,
 
 func startTLSServer(t *testing.T, expected int) (string, <-chan []byte, func()) {
 	t.Helper()
-	certificate := selfSignedCertificate(t)
+	return startTLSServerWithCertificate(t, expected, selfSignedCertificate(t))
+}
+
+func startTLSServerWithCertificate(
+	t *testing.T,
+	expected int,
+	certificate tls.Certificate,
+) (string, <-chan []byte, func()) {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -297,6 +522,12 @@ func readHeaders(reader io.Reader) ([]byte, error) {
 
 func selfSignedCertificate(t *testing.T) tls.Certificate {
 	t.Helper()
+	certificate, _ := selfSignedCertificateMaterial(t)
+	return certificate
+}
+
+func selfSignedCertificateMaterial(t *testing.T) (tls.Certificate, []byte) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -329,5 +560,5 @@ func selfSignedCertificate(t *testing.T) tls.Certificate {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return certificate
+	return certificate, certPEM
 }

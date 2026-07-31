@@ -12,6 +12,8 @@ It opens independent TLS connections, writes an exact request prefix to every co
 - No HTTP serializer, redirects, retries, pooling, or header rewriting.
 - No FIRE unless every requested connection reached `PREFIX_ARMED`.
 - TLS profile and custom hex ClientHello are mutually exclusive.
+- A TLS connection becomes ready only after explicit `http/1.1` ALPN negotiation.
+- The target-facing ClientHello is captured at the raw stream boundary before any request prefix is written.
 - Response capture is bounded per connection and across the entire race, and reports whether it ended by EOF, idle timeout, or byte limit.
 
 ## Build and verify
@@ -73,6 +75,17 @@ The CLI accepts one strict JSON value. Unknown fields are rejected. The machine-
 ```
 
 `tls.enabled` defaults to `true`; set it to `false` for raw TCP HTTP. `tls.client_hello_hex` may replace `tls.profile` when reproducing an intercepted ClientHello. Certificate verification is enabled by default; `tls.ca_file` adds a PEM trust source. `tls.insecure_skip_verify` exists for controlled local labs.
+
+## TLS identity evidence
+
+Every successful TLS connection records the selected identity source, selected profile when applicable, certificate-verification result, negotiated TLS parameters, and evidence derived from the exact outbound ClientHello handshake bytes:
+
+- `client_hello_sha256`: exact per-connection ClientHello hash, including random material;
+- `client_hello_ja3`: ordered structural fingerprint with GREASE values removed;
+- `client_hello_ja3_sha256`: stable hash of that structural fingerprint;
+- `client_hello_bytes` and `client_hello_record_count`: capture completeness metadata.
+
+The report intentionally stores hashes and the structural fingerprint rather than replayable raw ClientHello bytes. If the outbound ClientHello cannot be reconstructed from the captured TLS records, or if ALPN is absent or different, the connection fails before `ARMED` and the batch does not FIRE.
 
 ## Scope
 

@@ -127,6 +127,14 @@ func worker(
 	result.TLSVersion = conn.TLSVersion
 	result.CipherSuite = conn.CipherSuite
 	result.ALPN = conn.ALPN
+	result.CertificateVerified = conn.CertificateVerified
+	result.TLSIdentitySource = conn.TLSIdentitySource
+	result.TLSProfile = conn.TLSProfile
+	result.ClientHelloBytes = conn.ClientHelloBytes
+	result.ClientHelloSHA256 = conn.ClientHelloSHA256
+	result.ClientHelloJA3 = conn.ClientHelloJA3
+	result.ClientHelloJA3SHA256 = conn.ClientHelloJA3SHA256
+	result.ClientHelloRecordCount = conn.ClientHelloRecordCount
 
 	result.Phase = "arm"
 	if err = transport.WriteAll(conn.Conn, plan.Prefix, plan.IOTimeout); err != nil {
