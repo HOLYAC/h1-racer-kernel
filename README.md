@@ -34,6 +34,12 @@ go build -trimpath ./cmd/h1-racer-kernel
 h1-racer-kernel --plan examples/local-plan.json --output race-result.json
 ```
 
+Print the embedded build version:
+
+```sh
+h1-racer-kernel --version
+```
+
 List accepted profiles:
 
 ```sh

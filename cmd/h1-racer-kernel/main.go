@@ -15,6 +15,8 @@ import (
 	"github.com/HOLYAC/h1-racer-kernel/internal/transport"
 )
 
+var version = "dev"
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -25,8 +27,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	planPath := flags.String("plan", "", "path to RacePlan JSON")
 	outputPath := flags.String("output", "", "optional path for RaceReport JSON")
 	listProfiles := flags.Bool("list-profiles", false, "list accepted TLS profile names")
+	showVersion := flags.Bool("version", false, "print build version")
 	if err := flags.Parse(args); err != nil {
 		return 2
+	}
+	if *showVersion {
+		fmt.Fprintln(stdout, version)
+		return 0
 	}
 	if *listProfiles {
 		names := transport.ProfileNames()
