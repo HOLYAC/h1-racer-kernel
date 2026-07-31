@@ -46,6 +46,12 @@ List accepted profiles:
 h1-racer-kernel --list-profiles
 ```
 
+Validate a pasted compact ClientHello hex stream without opening a network connection:
+
+```sh
+h1-racer-kernel --validate-client-hello clienthello.hex
+```
+
 ## RacePlan v1
 
 The CLI accepts one strict JSON value. Unknown fields are rejected. The machine-readable contract is [`schema/race-plan-v1.schema.json`](schema/race-plan-v1.schema.json).

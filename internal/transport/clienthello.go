@@ -9,10 +9,23 @@ import (
 	utls "github.com/bogdanfinn/utls"
 )
 
+const maxClientHelloBytes = 64 << 10
+
+func ValidateClientHelloHex(value string) error {
+	_, err := clientHelloSpecFromHex(value)
+	return err
+}
+
 func clientHelloSpecFromHex(value string) (*utls.ClientHelloSpec, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil, errors.New("empty client hello")
+	}
+	if len(value)%2 != 0 {
+		return nil, errors.New("client hello hex length must be even")
+	}
+	if len(value)/2 > maxClientHelloBytes {
+		return nil, fmt.Errorf("client hello exceeds %d bytes", maxClientHelloBytes)
 	}
 	raw, err := hex.DecodeString(value)
 	if err != nil {

@@ -27,6 +27,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	planPath := flags.String("plan", "", "path to RacePlan JSON")
 	outputPath := flags.String("output", "", "optional path for RaceReport JSON")
 	quiet := flags.Bool("quiet", false, "suppress report JSON on stdout; requires --output")
+	validateClientHello := flags.String(
+		"validate-client-hello",
+		"",
+		"validate compact ClientHello hex from a file and exit",
+	)
 	listProfiles := flags.Bool("list-profiles", false, "list accepted TLS profile names")
 	showVersion := flags.Bool("version", false, "print build version")
 	if err := flags.Parse(args); err != nil {
@@ -42,6 +47,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		for _, name := range names {
 			fmt.Fprintln(stdout, name)
 		}
+		return 0
+	}
+	if *validateClientHello != "" {
+		raw, readErr := os.ReadFile(*validateClientHello)
+		if readErr != nil {
+			fmt.Fprintf(stderr, "read client hello: %v\n", readErr)
+			return 2
+		}
+		if validateErr := transport.ValidateClientHelloHex(string(raw)); validateErr != nil {
+			fmt.Fprintf(stderr, "validate client hello: %v\n", validateErr)
+			return 2
+		}
+		fmt.Fprintln(stdout, "valid")
 		return 0
 	}
 	if *planPath == "" {
