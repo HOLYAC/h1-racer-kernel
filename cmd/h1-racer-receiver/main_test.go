@@ -111,7 +111,8 @@ func TestReceiverRecordsExactBoundaryEvidence(t *testing.T) {
 		if !evidence.ExactMatch || evidence.PrefixCompletedAfterNS == nil || evidence.RequestCompletedAfterNS == nil {
 			t.Fatalf("incomplete evidence: %+v", evidence)
 		}
-		if *evidence.RequestCompletedAfterNS <= *evidence.PrefixCompletedAfterNS {
+		// Monotonic clocks may return the same tick for the two sequential reads on Windows.
+		if *evidence.RequestCompletedAfterNS < *evidence.PrefixCompletedAfterNS {
 			t.Fatalf("boundary ordering invalid: %+v", evidence)
 		}
 	}
