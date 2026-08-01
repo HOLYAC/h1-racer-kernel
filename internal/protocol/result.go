@@ -7,6 +7,8 @@ type ConnectionResult struct {
 	Phase                    string `json:"phase"`
 	LocalAddress             string `json:"local_address,omitempty"`
 	RemoteAddress            string `json:"remote_address,omitempty"`
+	DialRoute                string `json:"dial_route,omitempty"`
+	ProxyAddress             string `json:"proxy_address,omitempty"`
 	TLSVersion               string `json:"tls_version,omitempty"`
 	CipherSuite              string `json:"cipher_suite,omitempty"`
 	ALPN                     string `json:"alpn,omitempty"`
@@ -33,6 +35,7 @@ type ConnectionResult struct {
 type RaceReport struct {
 	SchemaVersion       int                `json:"schema_version"`
 	Target              string             `json:"target"`
+	Proxy               string             `json:"proxy,omitempty"`
 	Copies              int                `json:"copies"`
 	ReadyCount          int                `json:"ready_count"`
 	Fired               bool               `json:"fired"`

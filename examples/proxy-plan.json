@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "target": "example.com:443",
+  "server_name": "example.com",
+  "tls": {
+    "enabled": true,
+    "profile": "chrome_146"
+  },
+  "proxy_url": "socks5h://user:pass@127.0.0.1:1080",
+  "copies": 8,
+  "prefix_base64": "R0VUIC8gSFRUUC8xLjENCkhvc3Q6IGV4YW1wbGUuY29tDQpDb25uZWN0aW9uOiBjbG9zZQ0K",
+  "suffix_base64": "DQo=",
+  "connect_timeout_ms": 5000,
+  "io_timeout_ms": 5000,
+  "settle_ms": 10,
+  "max_response_bytes": 524288
+}

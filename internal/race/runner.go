@@ -20,22 +20,38 @@ type prepareOutcome struct {
 }
 
 func Run(parent context.Context, plan protocol.CompiledPlan) protocol.RaceReport {
+	factory, err := transport.NewFactory(plan)
+	if err != nil {
+		now := time.Now().UTC()
+		return protocol.RaceReport{
+			SchemaVersion:  protocol.SchemaVersion,
+			Target:         plan.Target,
+			Proxy:          plan.ProxyDisplay,
+			Copies:         plan.Copies,
+			StartedAtUTC:   now,
+			CompletedAtUTC: now,
+			AbortError:     err.Error(),
+			Connections:    make([]protocol.ConnectionResult, plan.Copies),
+		}
+	}
+	return runWithOpener(parent, plan, factory)
+}
+
+type connectionOpener interface {
+	Open(context.Context) (*transport.Connection, error)
+}
+
+func runWithOpener(parent context.Context, plan protocol.CompiledPlan, factory connectionOpener) protocol.RaceReport {
 	startedWall := time.Now().UTC()
 	started := time.Now()
 	report := protocol.RaceReport{
 		SchemaVersion: protocol.SchemaVersion,
 		Target:        plan.Target,
+		Proxy:         plan.ProxyDisplay,
 		Copies:        plan.Copies,
 		StartedAtUTC:  startedWall,
 		Connections:   make([]protocol.ConnectionResult, plan.Copies),
 	}
-	factory, err := transport.NewFactory(plan)
-	if err != nil {
-		report.AbortError = err.Error()
-		report.CompletedAtUTC = time.Now().UTC()
-		return report
-	}
-
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	prepared := make(chan prepareOutcome, plan.Copies)
@@ -68,15 +84,23 @@ func Run(parent context.Context, plan protocol.CompiledPlan) protocol.RaceReport
 			case <-timer.C:
 			case <-ctx.Done():
 				if !timer.Stop() {
-					<-timer.C
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
 			}
 		}
-		releaseNS := time.Since(started).Nanoseconds()
-		releaseAfterStart.Store(releaseNS)
-		report.ReleaseAfterStartNS = int64Pointer(releaseNS)
-		report.Fired = true
-		close(fire)
+		if ctx.Err() != nil {
+			report.AbortError = "race canceled before FIRE: " + ctx.Err().Error()
+			cancel()
+		} else {
+			releaseNS := time.Since(started).Nanoseconds()
+			releaseAfterStart.Store(releaseNS)
+			report.ReleaseAfterStartNS = int64Pointer(releaseNS)
+			report.Fired = true
+			close(fire)
+		}
 	}
 
 	for range plan.Copies {
@@ -93,7 +117,7 @@ func worker(
 	index int,
 	started time.Time,
 	plan protocol.CompiledPlan,
-	factory *transport.Factory,
+	factory connectionOpener,
 	fire <-chan struct{},
 	releaseAfterStart *atomic.Int64,
 	prepared chan<- prepareOutcome,
@@ -112,6 +136,7 @@ func worker(
 
 	conn, err := factory.Open(ctx)
 	if err != nil {
+		result.Phase = transport.ErrorPhase(err)
 		result.Error = err.Error()
 		return
 	}
@@ -124,6 +149,8 @@ func worker(
 	}
 	result.LocalAddress = conn.LocalAddress
 	result.RemoteAddress = conn.RemoteAddress
+	result.DialRoute = conn.DialRoute
+	result.ProxyAddress = conn.ProxyAddress
 	result.TLSVersion = conn.TLSVersion
 	result.CipherSuite = conn.CipherSuite
 	result.ALPN = conn.ALPN

@@ -26,6 +26,8 @@ type Connection struct {
 	HandshakeAt            *time.Time
 	LocalAddress           string
 	RemoteAddress          string
+	DialRoute              string
+	ProxyAddress           string
 	TLSVersion             string
 	CipherSuite            string
 	ALPN                   string
@@ -59,10 +61,10 @@ func NewFactory(plan protocol.CompiledPlan) (*Factory, error) {
 
 func (f *Factory) Open(ctx context.Context) (*Connection, error) {
 	dialer := &net.Dialer{Timeout: f.plan.ConnectTimeout, KeepAlive: 30 * time.Second}
-	raw, err := dialer.DialContext(ctx, "tcp", f.plan.Target)
+	raw, dialRoute, proxyAddress, err := dialTarget(ctx, dialer, f.plan.Target, f.plan.ProxyURL)
 	connectedAt := time.Now()
 	if err != nil {
-		return nil, fmt.Errorf("dial: %w", err)
+		return nil, err
 	}
 	closeOnError := true
 	defer func() {
@@ -83,6 +85,8 @@ func (f *Factory) Open(ctx context.Context) (*Connection, error) {
 			ConnectedAt:   connectedAt,
 			LocalAddress:  raw.LocalAddr().String(),
 			RemoteAddress: raw.RemoteAddr().String(),
+			DialRoute:     dialRoute,
+			ProxyAddress:  proxyAddress,
 		}, nil
 	}
 
@@ -117,21 +121,21 @@ func (f *Factory) Open(ctx context.Context) (*Connection, error) {
 		uconn = utls.UClient(traceRaw, config, id, false, true, true)
 	}
 	if err = uconn.HandshakeContext(ctx); err != nil {
-		return nil, fmt.Errorf("TLS handshake: %w", err)
+		return nil, phaseError("handshake", fmt.Errorf("TLS handshake: %w", err))
 	}
 	handshakeAt := time.Now()
 	_ = uconn.SetDeadline(time.Time{})
 	state := uconn.ConnectionState()
 	if state.NegotiatedProtocol != "http/1.1" {
-		return nil, fmt.Errorf(
+		return nil, phaseError("handshake", fmt.Errorf(
 			"TLS peer negotiated ALPN %q; required http/1.1",
 			state.NegotiatedProtocol,
-		)
+		))
 	}
 	captured, overflow := traceRaw.snapshot()
 	evidence, evidenceErr := analyzeCapturedClientHello(captured, overflow)
 	if evidenceErr != nil {
-		return nil, fmt.Errorf("capture outbound ClientHello: %w", evidenceErr)
+		return nil, phaseError("handshake", fmt.Errorf("capture outbound ClientHello: %w", evidenceErr))
 	}
 	verified := !f.plan.TLS.InsecureSkipVerify
 	closeOnError = false
@@ -141,6 +145,8 @@ func (f *Factory) Open(ctx context.Context) (*Connection, error) {
 		HandshakeAt:            &handshakeAt,
 		LocalAddress:           raw.LocalAddr().String(),
 		RemoteAddress:          raw.RemoteAddr().String(),
+		DialRoute:              dialRoute,
+		ProxyAddress:           proxyAddress,
 		TLSVersion:             tls.VersionName(state.Version),
 		CipherSuite:            tls.CipherSuiteName(state.CipherSuite),
 		ALPN:                   state.NegotiatedProtocol,

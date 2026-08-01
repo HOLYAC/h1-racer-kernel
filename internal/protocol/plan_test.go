@@ -70,3 +70,39 @@ func TestCompileRejectsTLSOptionsWhenDisabled(t *testing.T) {
 		t.Fatal("expected disabled TLS option error")
 	}
 }
+
+func TestCompileAcceptsHTTPAndSOCKS5Proxies(t *testing.T) {
+	for _, proxyURL := range []string{
+		"http://user:pass@127.0.0.1:8080",
+		"socks5://127.0.0.1:1080",
+		"socks5h://[::1]:1080",
+	} {
+		plan := validPlan()
+		plan.ProxyURL = proxyURL
+		compiled, err := plan.Compile()
+		if err != nil {
+			t.Fatalf("proxy %q: %v", proxyURL, err)
+		}
+		if compiled.ProxyURL == nil || compiled.ProxyDisplay == "" {
+			t.Fatalf("proxy %q was not compiled", proxyURL)
+		}
+		if compiled.ProxyURL.User != nil && compiled.ProxyDisplay == proxyURL {
+			t.Fatalf("proxy display leaked credentials: %q", compiled.ProxyDisplay)
+		}
+	}
+}
+
+func TestCompileRejectsAmbiguousProxyURLs(t *testing.T) {
+	for _, proxyURL := range []string{
+		"https://127.0.0.1:8443",
+		"http://127.0.0.1",
+		"http://127.0.0.1:8080/path",
+		"http://127.0.0.1:8080?x=y",
+	} {
+		plan := validPlan()
+		plan.ProxyURL = proxyURL
+		if _, err := plan.Compile(); err == nil {
+			t.Fatalf("proxy %q was accepted", proxyURL)
+		}
+	}
+}

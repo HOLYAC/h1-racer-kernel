@@ -61,6 +61,13 @@
         }
       ]
     },
+    "proxy_url": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(http|socks5|socks5h)://",
+      "description": "Optional authenticated HTTP CONNECT or SOCKS5 upstream proxy with explicit port"
+    },
     "copies": {
       "type": "integer",
       "minimum": 2,

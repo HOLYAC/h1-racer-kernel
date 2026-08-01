@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ type RacePlan struct {
 	Target           string  `json:"target"`
 	ServerName       string  `json:"server_name,omitempty"`
 	TLS              TLSPlan `json:"tls"`
+	ProxyURL         string  `json:"proxy_url,omitempty"`
 	Copies           int     `json:"copies"`
 	PrefixBase64     string  `json:"prefix_base64"`
 	SuffixBase64     string  `json:"suffix_base64"`
@@ -47,6 +49,8 @@ type CompiledPlan struct {
 	ServerName       string
 	UseTLS           bool
 	TLS              TLSPlan
+	ProxyURL         *url.URL
+	ProxyDisplay     string
 	Copies           int
 	Prefix           []byte
 	Suffix           []byte
@@ -67,6 +71,11 @@ func (p RacePlan) Compile() (CompiledPlan, error) {
 	}
 	if p.Copies < MinCopies || p.Copies > MaxCopies {
 		return CompiledPlan{}, fmt.Errorf("copies must be between %d and %d", MinCopies, MaxCopies)
+	}
+
+	proxyURL, proxyDisplay, err := compileProxyURL(p.ProxyURL)
+	if err != nil {
+		return CompiledPlan{}, err
 	}
 
 	useTLS := true
@@ -157,6 +166,8 @@ func (p RacePlan) Compile() (CompiledPlan, error) {
 		ServerName:       serverName,
 		UseTLS:           useTLS,
 		TLS:              p.TLS,
+		ProxyURL:         proxyURL,
+		ProxyDisplay:     proxyDisplay,
 		Copies:           p.Copies,
 		Prefix:           prefix,
 		Suffix:           suffix,
@@ -165,4 +176,35 @@ func (p RacePlan) Compile() (CompiledPlan, error) {
 		Settle:           time.Duration(p.SettleMS) * time.Millisecond,
 		MaxResponseBytes: maxResponse,
 	}, nil
+}
+
+func compileProxyURL(value string) (*url.URL, string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, "", nil
+	}
+	if len(value) > 4096 {
+		return nil, "", errors.New("proxy_url is too long")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return nil, "", fmt.Errorf("proxy_url: %w", err)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "socks5" && scheme != "socks5h" {
+		return nil, "", fmt.Errorf("proxy_url scheme must be http, socks5, or socks5h")
+	}
+	if parsed.Hostname() == "" || parsed.Port() == "" {
+		return nil, "", errors.New("proxy_url must include host and explicit port")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return nil, "", errors.New("proxy_url path is not supported")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, "", errors.New("proxy_url query and fragment are not supported")
+	}
+	parsed.Scheme = scheme
+	parsed.Path = ""
+	display := scheme + "://" + parsed.Host
+	return parsed, display, nil
 }

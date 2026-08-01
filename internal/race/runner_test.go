@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -20,10 +21,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/HOLYAC/h1-racer-kernel/internal/protocol"
+	"github.com/HOLYAC/h1-racer-kernel/internal/transport"
 	utls "github.com/bogdanfinn/utls"
 )
 
@@ -297,6 +300,306 @@ func TestRunAbortsBeforeFireWhenOneHandshakeFails(t *testing.T) {
 	}
 }
 
+func TestRunSupportsRepresentativeTLSProfiles(t *testing.T) {
+	profiles := []string{"default", "chrome_146", "firefox_147", "safari_ios_18_0"}
+	const copies = 2
+	address, requests, closeServer := startTLSServer(t, len(profiles)*copies)
+	defer closeServer()
+	prefix := []byte("GET /profiles HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n")
+	suffix := []byte("\r\n")
+	for _, profile := range profiles {
+		t.Run(profile, func(t *testing.T) {
+			plan := protocol.RacePlan{
+				SchemaVersion:    protocol.SchemaVersion,
+				Target:           address,
+				ServerName:       "localhost",
+				TLS:              protocol.TLSPlan{Profile: profile, InsecureSkipVerify: true},
+				Copies:           copies,
+				PrefixBase64:     base64.StdEncoding.EncodeToString(prefix),
+				SuffixBase64:     base64.StdEncoding.EncodeToString(suffix),
+				ConnectTimeoutMS: 3000,
+				IOTimeoutMS:      1000,
+			}
+			compiled, err := plan.Compile()
+			if err != nil {
+				t.Fatal(err)
+			}
+			report := Run(context.Background(), compiled)
+			if !report.Fired || report.AbortError != "" {
+				t.Fatalf("profile %s failed: fired=%v abort=%q", profile, report.Fired, report.AbortError)
+			}
+			for _, result := range report.Connections {
+				if result.Error != "" || result.TLSProfile != profile || result.TLSIdentitySource != "profile" {
+					t.Fatalf("profile %s result: %+v", profile, result)
+				}
+			}
+			for range copies {
+				select {
+				case request := <-requests:
+					want := append(append([]byte{}, prefix...), suffix...)
+					if !bytes.Equal(request, want) {
+						t.Fatalf("profile %s changed request bytes", profile)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatalf("profile %s request missing", profile)
+				}
+			}
+		})
+	}
+}
+
+func TestRunFiresIPv6LoopbackConnections(t *testing.T) {
+	const copies = 3
+	address, requests, closeServer, ok := tryStartPlainServer("tcp6", "[::1]:0", copies)
+	if !ok {
+		t.Skip("IPv6 loopback is unavailable")
+	}
+	defer closeServer()
+	disabled := false
+	prefix := []byte("GET /ipv6 HTTP/1.1\r\nHost: [::1]\r\nConnection: close\r\n")
+	suffix := []byte("\r\n")
+	plan := protocol.RacePlan{
+		SchemaVersion:    protocol.SchemaVersion,
+		Target:           address,
+		TLS:              protocol.TLSPlan{Enabled: &disabled},
+		Copies:           copies,
+		PrefixBase64:     base64.StdEncoding.EncodeToString(prefix),
+		SuffixBase64:     base64.StdEncoding.EncodeToString(suffix),
+		ConnectTimeoutMS: 3000,
+		IOTimeoutMS:      1000,
+	}
+	compiled, err := plan.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := Run(context.Background(), compiled)
+	if !report.Fired || report.ReadyCount != copies || report.AbortError != "" {
+		t.Fatalf("IPv6 race failed: %+v", report)
+	}
+	for range copies {
+		select {
+		case request := <-requests:
+			if !bytes.Equal(request, append(append([]byte{}, prefix...), suffix...)) {
+				t.Fatal("IPv6 request bytes changed")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("IPv6 request missing")
+		}
+	}
+}
+
+func TestRunPhaseInterruptions(t *testing.T) {
+	basePlan := func() protocol.CompiledPlan {
+		disabled := false
+		plan := protocol.RacePlan{
+			SchemaVersion:    protocol.SchemaVersion,
+			Target:           "127.0.0.1:1",
+			TLS:              protocol.TLSPlan{Enabled: &disabled},
+			Copies:           3,
+			PrefixBase64:     base64.StdEncoding.EncodeToString([]byte("GET / HTTP/1.1\r\nHost: test\r\n")),
+			SuffixBase64:     base64.StdEncoding.EncodeToString([]byte("\r\n")),
+			ConnectTimeoutMS: 100,
+			IOTimeoutMS:      100,
+			SettleMS:         0,
+			MaxResponseBytes: 1024,
+		}
+		compiled, err := plan.Compile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return compiled
+	}
+
+	t.Run("connect", func(t *testing.T) {
+		factory := &scriptedOpener{open: func(int) (*transport.Connection, error) {
+			return nil, &transport.PhaseError{Phase: "connect", Err: errors.New("synthetic refusal")}
+		}}
+		report := runWithOpener(context.Background(), basePlan(), factory)
+		assertPreFirePhase(t, report, "connect")
+	})
+
+	t.Run("proxy", func(t *testing.T) {
+		factory := &scriptedOpener{open: func(int) (*transport.Connection, error) {
+			return nil, &transport.PhaseError{Phase: "proxy", Err: errors.New("synthetic proxy refusal")}
+		}}
+		report := runWithOpener(context.Background(), basePlan(), factory)
+		assertPreFirePhase(t, report, "proxy")
+	})
+
+	t.Run("handshake", func(t *testing.T) {
+		factory := &scriptedOpener{open: func(int) (*transport.Connection, error) {
+			return nil, &transport.PhaseError{Phase: "handshake", Err: errors.New("synthetic TLS alert")}
+		}}
+		report := runWithOpener(context.Background(), basePlan(), factory)
+		assertPreFirePhase(t, report, "handshake")
+	})
+
+	t.Run("arm", func(t *testing.T) {
+		factory := newScriptedFactory(func(index int) *scriptedConn {
+			conn := successfulScriptedConn()
+			if index == 0 {
+				conn.failWriteAt = 1
+			}
+			return conn
+		})
+		report := runWithOpener(context.Background(), basePlan(), factory)
+		assertPreFirePhase(t, report, "arm")
+	})
+
+	t.Run("ready cancellation", func(t *testing.T) {
+		plan := basePlan()
+		plan.Settle = time.Second
+		armed := make(chan struct{}, plan.Copies)
+		factory := newScriptedFactory(func(int) *scriptedConn {
+			conn := successfulScriptedConn()
+			conn.afterFirstWrite = func() { armed <- struct{}{} }
+			return conn
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan protocol.RaceReport, 1)
+		go func() { done <- runWithOpener(ctx, plan, factory) }()
+		for range plan.Copies {
+			select {
+			case <-armed:
+			case <-time.After(2 * time.Second):
+				t.Fatal("workers did not arm")
+			}
+		}
+		cancel()
+		report := <-done
+		if report.Fired || !strings.Contains(report.AbortError, "canceled before FIRE") {
+			t.Fatalf("ready cancellation escaped into FIRE: %+v", report)
+		}
+	})
+
+	t.Run("fire", func(t *testing.T) {
+		factory := newScriptedFactory(func(index int) *scriptedConn {
+			conn := successfulScriptedConn()
+			if index == 0 {
+				conn.failWriteAt = 2
+			}
+			return conn
+		})
+		report := runWithOpener(context.Background(), basePlan(), factory)
+		if !report.Fired || !hasFailedPhase(report, "fire") {
+			t.Fatalf("fire failure not preserved: %+v", report)
+		}
+	})
+
+	t.Run("response", func(t *testing.T) {
+		factory := newScriptedFactory(func(index int) *scriptedConn {
+			conn := successfulScriptedConn()
+			if index == 0 {
+				conn.readErr = errors.New("synthetic response reset")
+				conn.response = nil
+			}
+			return conn
+		})
+		report := runWithOpener(context.Background(), basePlan(), factory)
+		if !report.Fired || !hasFailedPhase(report, "response") {
+			t.Fatalf("response failure not preserved: %+v", report)
+		}
+	})
+}
+
+func hasFailedPhase(report protocol.RaceReport, phase string) bool {
+	for _, result := range report.Connections {
+		if result.Phase == phase && result.Error != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func assertPreFirePhase(t *testing.T, report protocol.RaceReport, phase string) {
+	t.Helper()
+	if report.Fired || report.AbortError == "" {
+		t.Fatalf("phase %s did not abort before FIRE: %+v", phase, report)
+	}
+	found := false
+	for _, result := range report.Connections {
+		if result.Phase == phase && result.Error != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("phase %s was not recorded: %+v", phase, report.Connections)
+	}
+}
+
+type scriptedOpener struct {
+	next atomic.Int64
+	open func(int) (*transport.Connection, error)
+}
+
+func (o *scriptedOpener) Open(context.Context) (*transport.Connection, error) {
+	index := int(o.next.Add(1) - 1)
+	return o.open(index)
+}
+
+func newScriptedFactory(makeConn func(int) *scriptedConn) *scriptedOpener {
+	return &scriptedOpener{open: func(index int) (*transport.Connection, error) {
+		conn := makeConn(index)
+		now := time.Now()
+		return &transport.Connection{
+			Conn:          conn,
+			ConnectedAt:   now,
+			LocalAddress:  "127.0.0.1:10000",
+			RemoteAddress: "127.0.0.1:10001",
+			DialRoute:     "test",
+		}, nil
+	}}
+}
+
+type scriptedConn struct {
+	writes          atomic.Int64
+	failWriteAt     int64
+	afterFirstWrite func()
+	response        []byte
+	readOffset      int
+	readErr         error
+	closed          atomic.Bool
+}
+
+func successfulScriptedConn() *scriptedConn {
+	return &scriptedConn{
+		response: []byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"),
+		readErr:  io.EOF,
+	}
+}
+
+func (c *scriptedConn) Read(p []byte) (int, error) {
+	if c.readOffset < len(c.response) {
+		n := copy(p, c.response[c.readOffset:])
+		c.readOffset += n
+		return n, nil
+	}
+	return 0, c.readErr
+}
+
+func (c *scriptedConn) Write(p []byte) (int, error) {
+	call := c.writes.Add(1)
+	if call == 1 && c.afterFirstWrite != nil {
+		c.afterFirstWrite()
+	}
+	if c.failWriteAt != 0 && call == c.failWriteAt {
+		return 0, errors.New("synthetic write reset")
+	}
+	return len(p), nil
+}
+
+func (c *scriptedConn) Close() error                     { c.closed.Store(true); return nil }
+func (c *scriptedConn) LocalAddr() net.Addr              { return scriptedAddr("local") }
+func (c *scriptedConn) RemoteAddr() net.Addr             { return scriptedAddr("remote") }
+func (c *scriptedConn) SetDeadline(time.Time) error      { return nil }
+func (c *scriptedConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *scriptedConn) SetWriteDeadline(time.Time) error { return nil }
+
+type scriptedAddr string
+
+func (a scriptedAddr) Network() string { return "test" }
+func (a scriptedAddr) String() string  { return string(a) }
+
 func capturedClientHelloHex(t *testing.T) string {
 	t.Helper()
 	client, server := net.Pipe()
@@ -332,9 +635,17 @@ func capturedClientHelloHex(t *testing.T) string {
 
 func startPlainServer(t *testing.T, expected int) (string, <-chan []byte, func()) {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	address, requests, closeServer, ok := tryStartPlainServer("tcp4", "127.0.0.1:0", expected)
+	if !ok {
+		t.Fatal("listen plain server")
+	}
+	return address, requests, closeServer
+}
+
+func tryStartPlainServer(network, address string, expected int) (string, <-chan []byte, func(), bool) {
+	listener, err := net.Listen(network, address)
 	if err != nil {
-		t.Fatal(err)
+		return "", nil, nil, false
 	}
 	requests := make(chan []byte, expected)
 	var wg sync.WaitGroup
@@ -363,7 +674,7 @@ func startPlainServer(t *testing.T, expected int) (string, <-chan []byte, func()
 	return listener.Addr().String(), requests, func() {
 		_ = listener.Close()
 		wg.Wait()
-	}
+	}, true
 }
 
 func startTLSWithoutALPN(t *testing.T, expected int) (string, func()) {
