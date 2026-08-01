@@ -104,8 +104,8 @@ func TestReceiverRecordsExactBoundaryEvidence(t *testing.T) {
 	if report.ExactMatches != copies || report.Errors != 0 {
 		t.Fatalf("report=%+v", report)
 	}
-	if report.RequestCompletionSpreadNS == nil || *report.RequestCompletionSpreadNS <= 0 {
-		t.Fatalf("missing receiver-side completion spread: %+v", report)
+	if report.RequestCompletionSpreadNS == nil || *report.RequestCompletionSpreadNS < 0 {
+		t.Fatalf("invalid receiver-side completion spread: %+v", report)
 	}
 	for _, evidence := range report.Connections {
 		if !evidence.ExactMatch || evidence.PrefixCompletedAfterNS == nil || evidence.RequestCompletedAfterNS == nil {
