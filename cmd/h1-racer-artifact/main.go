@@ -25,6 +25,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runKeygen(args[1:], stdout, stderr)
 	case "sign":
 		return runSign(args[1:], stdout, stderr)
+	case "fingerprint":
+		return runFingerprint(args[1:], stdout, stderr)
 	case "verify":
 		return runVerify(args[1:], stdout, stderr)
 	default:
@@ -75,6 +77,26 @@ func runKeygen(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runFingerprint(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("fingerprint", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	publicPath := flags.String("public", "", "PKIX Ed25519 public PEM path")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if *publicPath == "" {
+		fmt.Fprintln(stderr, "fingerprint requires --public")
+		return 2
+	}
+	fingerprint, err := artifact.PublicKeyFingerprint(*publicPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "fingerprint: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, fingerprint)
+	return 0
+}
+
 func runSign(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("sign", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -118,5 +140,5 @@ func runVerify(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(writer io.Writer) {
-	fmt.Fprintln(writer, "usage: h1-racer-artifact <archive|keygen|sign|verify> [flags]")
+	fmt.Fprintln(writer, "usage: h1-racer-artifact <archive|keygen|fingerprint|sign|verify> [flags]")
 }

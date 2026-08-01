@@ -114,3 +114,44 @@ Archives use lexical file ordering, stored entries, fixed permissions, and a fix
 The kernel owns framing validation, raw transport, synchronization, bounded response capture, proxy dialing, and wire evidence. Burp owns only request selection, UI, persisted operator choices, and process launch.
 
 Use only against systems you own or are explicitly authorized to test.
+
+## Compatibility contract
+
+The Burp bridge refuses to initialize against an incompatible kernel. The exact
+machine contract is printed by:
+
+```sh
+h1-racer-kernel --contract-version
+```
+
+The current value is `h1-racer-kernel-contract/1`.
+
+## Independent receiver evidence
+
+`h1-racer-receiver` is a separate process that records when each connection
+finishes the declared prefix and when the complete expected request arrives. It
+emits request hashes, exact-match verdicts, prefix-to-completion durations, and
+the receiver-side request-completion spread. This proves server-side arrival
+rather than inferring it from local write completion.
+
+## Upstream proxies
+
+RacePlan v1 accepts an optional `proxy` URL:
+
+- `http://[user:pass@]host:port` for HTTP CONNECT;
+- `socks5://[user:pass@]host:port`;
+- `socks5h://[user:pass@]host:port`.
+
+Proxy credentials are used only while establishing each tunnel. Reports contain
+the redacted proxy endpoint and dial route, never user information.
+
+## Adversarial gates
+
+```powershell
+./scripts/fuzz.ps1 -Seconds 10
+./scripts/soak.ps1 -Rounds 100
+```
+
+The fuzz target exercises the production HTTP/1 framing compiler. The soak gate
+uses fragmented responses, jitter, idle-timeout completion, truncated raw
+responses, and hundreds of independent connections.

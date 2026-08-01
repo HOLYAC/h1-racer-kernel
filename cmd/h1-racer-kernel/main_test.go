@@ -95,3 +95,14 @@ func TestPlanCanBeReadFromStdin(t *testing.T) {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
 	}
 }
+
+func TestContractVersion(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if exit := run([]string{"--contract-version"}, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit=%d stderr=%q", exit, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != contractVersion {
+		t.Fatalf("contract=%q", stdout.String())
+	}
+}

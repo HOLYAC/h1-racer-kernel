@@ -19,6 +19,8 @@ import (
 
 var version = "dev"
 
+const contractVersion = "h1-racer-kernel-contract/1"
+
 func main() {
 	os.Exit(runWithInput(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
@@ -45,11 +47,16 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	)
 	listProfiles := flags.Bool("list-profiles", false, "list accepted TLS profile names")
 	showVersion := flags.Bool("version", false, "print build version")
+	showContract := flags.Bool("contract-version", false, "print the Burp/kernel protocol contract version")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if *showVersion {
 		fmt.Fprintln(stdout, version)
+		return 0
+	}
+	if *showContract {
+		fmt.Fprintln(stdout, contractVersion)
 		return 0
 	}
 	if *listProfiles {

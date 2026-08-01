@@ -1,0 +1,39 @@
+name: Kernel CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Verify
+        shell: pwsh
+        run: ./scripts/verify.ps1
+      - name: Fuzz framing
+        shell: pwsh
+        run: ./scripts/fuzz.ps1 -Seconds 5
+      - name: Network soak
+        shell: pwsh
+        run: ./scripts/soak.ps1 -Rounds 50

@@ -66,6 +66,15 @@ func GenerateKeyPair(privatePath, publicPath string) error {
 	return nil
 }
 
+func PublicKeyFingerprint(publicPath string) (string, error) {
+	publicKey, err := readPublicKey(publicPath)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(publicKey)
+	return hex.EncodeToString(digest[:]), nil
+}
+
 func SignFile(subjectPath, privatePath, signaturePath string) error {
 	privateKey, err := readPrivateKey(privatePath)
 	if err != nil {
